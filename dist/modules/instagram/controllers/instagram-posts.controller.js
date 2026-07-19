@@ -16,16 +16,14 @@ exports.InstagramPostsController = void 0;
 const common_1 = require("@nestjs/common");
 const instagram_publishing_service_1 = require("../services/instagram-publishing.service");
 const create_post_dto_1 = require("../dto/create-post.dto");
+const prisma_service_1 = require("../../../prisma.service");
 let InstagramPostsController = class InstagramPostsController {
-    constructor(instagramPublishingService) {
+    constructor(instagramPublishingService, prisma) {
         this.instagramPublishingService = instagramPublishingService;
+        this.prisma = prisma;
     }
-    async publishPost(dto, req) {
-        const mockPageAccessToken = 'EAABabcd1234...';
-        if (!mockPageAccessToken) {
-            throw new common_1.UnauthorizedException('No valid Instagram/Facebook token found for this account. Please reconnect.');
-        }
-        const platformPostId = await this.instagramPublishingService.publish(dto, mockPageAccessToken);
+    async publishPost(dto) {
+        const platformPostId = await this.instagramPublishingService.publish(dto);
         return {
             success: true,
             message: 'Post successfully published to Instagram.',
@@ -34,18 +32,56 @@ let InstagramPostsController = class InstagramPostsController {
             },
         };
     }
+    async schedulePost(dto) {
+        if (!dto.scheduledAt) {
+            throw new common_1.BadRequestException('scheduledAt parameter is required for scheduling a post.');
+        }
+        const post = await this.instagramPublishingService.schedule(dto);
+        return {
+            success: true,
+            message: 'Post successfully scheduled.',
+            data: post,
+        };
+    }
+    async getPosts(igUserId) {
+        if (!igUserId) {
+            throw new common_1.BadRequestException('igUserId query parameter is required.');
+        }
+        const posts = await this.prisma.instagramPost.findMany({
+            where: { igUserId },
+            orderBy: { createdAt: 'desc' },
+        });
+        return {
+            success: true,
+            data: posts,
+        };
+    }
 };
 exports.InstagramPostsController = InstagramPostsController;
 __decorate([
     (0, common_1.Post)('publish'),
     __param(0, (0, common_1.Body)()),
-    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_post_dto_1.CreatePostDto, Object]),
+    __metadata("design:paramtypes", [create_post_dto_1.CreatePostDto]),
     __metadata("design:returntype", Promise)
 ], InstagramPostsController.prototype, "publishPost", null);
+__decorate([
+    (0, common_1.Post)('schedule'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [create_post_dto_1.CreatePostDto]),
+    __metadata("design:returntype", Promise)
+], InstagramPostsController.prototype, "schedulePost", null);
+__decorate([
+    (0, common_1.Get)(),
+    __param(0, (0, common_1.Query)('igUserId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], InstagramPostsController.prototype, "getPosts", null);
 exports.InstagramPostsController = InstagramPostsController = __decorate([
     (0, common_1.Controller)('api/v1/instagram/posts'),
-    __metadata("design:paramtypes", [instagram_publishing_service_1.InstagramPublishingService])
+    __metadata("design:paramtypes", [instagram_publishing_service_1.InstagramPublishingService,
+        prisma_service_1.PrismaService])
 ], InstagramPostsController);
 //# sourceMappingURL=instagram-posts.controller.js.map

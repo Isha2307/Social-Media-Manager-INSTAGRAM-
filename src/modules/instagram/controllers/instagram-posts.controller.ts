@@ -1,31 +1,21 @@
-import { Body, Controller, Post, Req, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Post, Get, Query, Req, BadRequestException } from '@nestjs/common';
 import { InstagramPublishingService } from '../services/instagram-publishing.service';
 import { CreatePostDto } from '../dto/create-post.dto';
-import { Request } from 'express';
+import { PrismaService } from '../../../prisma.service';
 
 @Controller('api/v1/instagram/posts')
 export class InstagramPostsController {
-  constructor(private readonly instagramPublishingService: InstagramPublishingService) {}
+  constructor(
+    private readonly instagramPublishingService: InstagramPublishingService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   /**
    * Endpoint to instantly publish a post to Instagram.
    */
   @Post('publish')
-  async publishPost(@Body() dto: CreatePostDto, @Req() req: Request) {
-    // In a real application, you would:
-    // 1. Get the logged-in user from `req.user`
-    // 2. Query your database (Prisma) to ensure the user owns `dto.igUserId`
-    // 3. Retrieve the `pageAccessToken` from the database for that account.
-    
-    // For demonstration, we simulate the database retrieval.
-    const mockPageAccessToken = 'EAABabcd1234...'; 
-
-    if (!mockPageAccessToken) {
-      throw new UnauthorizedException('No valid Instagram/Facebook token found for this account. Please reconnect.');
-    }
-
-    // Pass the DTO and the secure token to the service
-    const platformPostId = await this.instagramPublishingService.publish(dto, mockPageAccessToken);
+  async publishPost(@Body() dto: CreatePostDto) {
+    const platformPostId = await this.instagramPublishingService.publish(dto);
 
     return {
       success: true,
@@ -33,6 +23,44 @@ export class InstagramPostsController {
       data: {
         platformPostId,
       },
+    };
+  }
+
+  /**
+   * Endpoint to schedule a post for future publication.
+   */
+  @Post('schedule')
+  async schedulePost(@Body() dto: CreatePostDto) {
+    if (!dto.scheduledAt) {
+      throw new BadRequestException('scheduledAt parameter is required for scheduling a post.');
+    }
+
+    const post = await this.instagramPublishingService.schedule(dto);
+
+    return {
+      success: true,
+      message: 'Post successfully scheduled.',
+      data: post,
+    };
+  }
+
+  /**
+   * Retrieves posts for a given Instagram Business Account to populate content calendar / post logs.
+   */
+  @Get()
+  async getPosts(@Query('igUserId') igUserId: string) {
+    if (!igUserId) {
+      throw new BadRequestException('igUserId query parameter is required.');
+    }
+
+    const posts = await this.prisma.instagramPost.findMany({
+      where: { igUserId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      success: true,
+      data: posts,
     };
   }
 }

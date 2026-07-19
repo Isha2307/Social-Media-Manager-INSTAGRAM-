@@ -1,8 +1,9 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-// import { InjectQueue } from '@nestjs/bull';
-// import { Queue } from 'bull';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import * as crypto from 'crypto';
+import { PrismaService } from '../../../prisma.service';
 
 @Injectable()
 export class InstagramWebhookService {
@@ -12,10 +13,10 @@ export class InstagramWebhookService {
 
   constructor(
     private configService: ConfigService,
-    // @InjectQueue('instagram-webhook') private readonly webhookQueue: Queue,
+    private prisma: PrismaService,
+    @InjectQueue('instagram-webhook') private readonly webhookQueue: Queue,
   ) {
     this.appSecret = this.configService.get<string>('META_APP_SECRET');
-    // You should define this token in your .env and input it in the Meta App Dashboard
     this.verifyToken = this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN') || 'my_secure_verify_token';
   }
 
@@ -56,19 +57,33 @@ export class InstagramWebhookService {
    * Enqueues the webhook payload to BullMQ for background processing.
    */
   async enqueueWebhookEvent(payload: any) {
-    this.logger.log('Enqueuing webhook event for background processing...');
+    this.logger.log('Logging and enqueuing webhook event for background processing...');
     
-    // In a real app, save to Prisma first:
-    // const event = await this.prisma.webhookEvent.create({
-    //   data: { eventType: 'UNKNOWN', payload: payload, status: 'PENDING' }
-    // });
+    // Extract eventType from Meta payload
+    let eventType = 'UNKNOWN';
+    if (payload.entry && payload.entry[0]?.changes && payload.entry[0].changes[0]?.field) {
+      eventType = payload.entry[0].changes[0].field;
+    }
 
-    // Add to BullMQ queue (uncomment when BullMQ is installed)
-    // await this.webhookQueue.add('process-webhook', { payload, dbEventId: event.id }, {
-    //   attempts: 3,
-    //   backoff: { type: 'exponential', delay: 2000 }
-    // });
+    // Save to Prisma
+    const event = await this.prisma.webhookEvent.create({
+      data: {
+        eventType,
+        payload: JSON.stringify(payload),
+        status: 'PENDING',
+      },
+    });
+
+    // Add to Bull queue
+    await this.webhookQueue.add(
+      'process-webhook',
+      { payload, dbEventId: event.id },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+      },
+    );
     
-    this.logger.log('Mock: Job added to BullMQ Queue');
+    this.logger.log(`Job added to Bull Queue for WebhookEvent ID: ${event.id}`);
   }
 }

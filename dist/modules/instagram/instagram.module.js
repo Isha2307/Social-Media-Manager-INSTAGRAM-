@@ -9,6 +9,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.InstagramModule = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const bull_1 = require("@nestjs/bull");
 const instagram_auth_controller_1 = require("./controllers/instagram-auth.controller");
 const instagram_posts_controller_1 = require("./controllers/instagram-posts.controller");
 const instagram_comments_controller_1 = require("./controllers/instagram-comments.controller");
@@ -18,6 +19,7 @@ const instagram_publishing_service_1 = require("./services/instagram-publishing.
 const instagram_comments_service_1 = require("./services/instagram-comments.service");
 const instagram_webhook_service_1 = require("./services/instagram-webhook.service");
 const instagram_webhook_processor_1 = require("./processors/instagram-webhook.processor");
+const instagram_publishing_processor_1 = require("./processors/instagram-publishing.processor");
 const instagram_gateway_1 = require("./gateways/instagram.gateway");
 let InstagramModule = class InstagramModule {
 };
@@ -26,6 +28,7 @@ exports.InstagramModule = InstagramModule = __decorate([
     (0, common_1.Module)({
         imports: [
             config_1.ConfigModule,
+            bull_1.BullModule.registerQueue({ name: 'instagram-webhook' }, { name: 'instagram-publishing' }),
         ],
         controllers: [
             instagram_auth_controller_1.InstagramAuthController,
@@ -39,6 +42,7 @@ exports.InstagramModule = InstagramModule = __decorate([
             instagram_comments_service_1.InstagramCommentsService,
             instagram_webhook_service_1.InstagramWebhookService,
             instagram_webhook_processor_1.InstagramWebhookProcessor,
+            instagram_publishing_processor_1.InstagramPublishingProcessor,
             instagram_gateway_1.InstagramGateway,
         ],
     })

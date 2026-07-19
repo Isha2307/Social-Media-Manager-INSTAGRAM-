@@ -20,4 +20,8 @@ export class CreatePostDto {
 
   @IsEnum(MediaType)
   mediaType: MediaType;
+
+  @IsOptional()
+  @IsString()
+  scheduledAt?: string; // ISO 8601 string
 }

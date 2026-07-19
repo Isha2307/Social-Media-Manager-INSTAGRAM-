@@ -8,15 +8,22 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var InstagramWebhookService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.InstagramWebhookService = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const bull_1 = require("@nestjs/bull");
 const crypto = require("crypto");
+const prisma_service_1 = require("../../../prisma.service");
 let InstagramWebhookService = InstagramWebhookService_1 = class InstagramWebhookService {
-    constructor(configService) {
+    constructor(configService, prisma, webhookQueue) {
         this.configService = configService;
+        this.prisma = prisma;
+        this.webhookQueue = webhookQueue;
         this.logger = new common_1.Logger(InstagramWebhookService_1.name);
         this.appSecret = this.configService.get('META_APP_SECRET');
         this.verifyToken = this.configService.get('META_WEBHOOK_VERIFY_TOKEN') || 'my_secure_verify_token';
@@ -45,13 +52,30 @@ let InstagramWebhookService = InstagramWebhookService_1 = class InstagramWebhook
         }
     }
     async enqueueWebhookEvent(payload) {
-        this.logger.log('Enqueuing webhook event for background processing...');
-        this.logger.log('Mock: Job added to BullMQ Queue');
+        this.logger.log('Logging and enqueuing webhook event for background processing...');
+        let eventType = 'UNKNOWN';
+        if (payload.entry && payload.entry[0]?.changes && payload.entry[0].changes[0]?.field) {
+            eventType = payload.entry[0].changes[0].field;
+        }
+        const event = await this.prisma.webhookEvent.create({
+            data: {
+                eventType,
+                payload: JSON.stringify(payload),
+                status: 'PENDING',
+            },
+        });
+        await this.webhookQueue.add('process-webhook', { payload, dbEventId: event.id }, {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+        });
+        this.logger.log(`Job added to Bull Queue for WebhookEvent ID: ${event.id}`);
     }
 };
 exports.InstagramWebhookService = InstagramWebhookService;
 exports.InstagramWebhookService = InstagramWebhookService = InstagramWebhookService_1 = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [config_1.ConfigService])
+    __param(2, (0, bull_1.InjectQueue)('instagram-webhook')),
+    __metadata("design:paramtypes", [config_1.ConfigService,
+        prisma_service_1.PrismaService, Object])
 ], InstagramWebhookService);
 //# sourceMappingURL=instagram-webhook.service.js.map

@@ -1,6 +1,7 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import { PrismaService } from '../../../prisma.service';
 
 @Injectable()
 export class InstagramAuthService {
@@ -10,7 +11,10 @@ export class InstagramAuthService {
   private readonly appSecret: string;
   private readonly redirectUri: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private prisma: PrismaService,
+  ) {
     this.graphApiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v19.0';
     this.appId = this.configService.get<string>('META_APP_ID');
     this.appSecret = this.configService.get<string>('META_APP_SECRET');
@@ -21,6 +25,16 @@ export class InstagramAuthService {
    * Constructs the URL to redirect the user to Meta for authentication.
    */
   getOAuthLoginUrl(): string {
+    const configId = this.configService.get<string>('META_CONFIG_ID');
+
+    if (configId) {
+      // Facebook Login for Business flow (required for Business App type)
+      this.logger.log(`Generating OAuth URL using Business config_id: ${configId}`);
+      return `https://www.facebook.com/${this.graphApiVersion}/dialog/oauth?client_id=${this.appId}&redirect_uri=${this.redirectUri}&config_id=${configId}&response_type=code`;
+    }
+
+    // Standard Facebook Login flow (works for Consumer / Other app types)
+    this.logger.log('Generating OAuth URL using standard scopes');
     const scopes = [
       'instagram_basic',
       'instagram_content_publish',
@@ -99,42 +113,109 @@ export class InstagramAuthService {
         throw new Error('No linked Instagram Business Account found for this Facebook Page.');
       }
 
-      // 5. Calculate expiration if available (Page tokens usually do not expire, but long-lived do)
-      // If we use Page Token, it is non-expiring until password change/revocation.
-      // We will save it to the DB. (Using a mock DB call for now as Prisma isn't fully set up yet)
-      
-      this.logger.log(`Successfully retrieved IG User ID: ${igUserId}. Saving to DB...`);
-      
-      /*
-      // Example Prisma Call:
-      await this.prisma.instagramAccount.create({
-        data: {
-          userId: userId,
-          igUserId: igUserId,
-          username: 'fetched_username', // Would need another API call to fetch username
-          facebookPageId: facebookPageId,
-          tokens: {
-            create: {
-              accessToken: pageAccessToken, // Should encrypt this
-              tokenType: 'PAGE',
-              scopes: ['instagram_basic', 'pages_read_engagement', 'instagram_content_publish'],
-              expiresAt: null, // Page tokens are non-expiring
-            }
-          }
-        }
+      // Fetch the username of the Instagram account
+      this.logger.log(`Fetching Instagram username for IG User ID: ${igUserId}...`);
+      const igProfileResponse = await axios.get(`https://graph.facebook.com/${this.graphApiVersion}/${igUserId}`, {
+        params: {
+          fields: 'username',
+          access_token: pageAccessToken,
+        },
       });
-      */
+      const username = igProfileResponse.data.username || 'instagram_user';
+
+      this.logger.log(`Successfully retrieved IG User ID: ${igUserId} (@${username}). Saving to DB...`);
+      
+      // Save or update account in Prisma DB
+      await this.prisma.instagramAccount.upsert({
+        where: { igUserId },
+        update: {
+          userId,
+          username,
+          facebookPageId,
+          accessToken: pageAccessToken,
+        },
+        create: {
+          userId,
+          igUserId,
+          username,
+          facebookPageId,
+          accessToken: pageAccessToken,
+        },
+      });
 
       return {
         success: true,
         message: 'Instagram account successfully linked.',
         igUserId,
         facebookPageId,
+        username,
       };
 
     } catch (error) {
       this.logger.error('Failed to exchange code for token', error.response?.data || error.message);
       throw new InternalServerErrorException('Failed to link Instagram account.');
+    }
+  }
+
+  /**
+   * Developer Quick Connect.
+   * Accepts a raw User Access Token (from Graph API Explorer) and uses it directly
+   * to look up the linked Facebook Pages and Instagram Business account.
+   * No app-secret token exchange is needed — works with any valid User Access Token
+   * that has pages_show_list + instagram_content_publish permissions.
+   */
+  async connectWithAccessToken(userAccessToken: string, userId: string): Promise<any> {
+    try {
+      this.logger.log(`[Quick Connect] Using provided access token directly...`);
+
+      // 1. Verify the token is valid by calling /me
+      const meRes = await axios.get(`https://graph.facebook.com/${this.graphApiVersion}/me`, {
+        params: { fields: 'id,name', access_token: userAccessToken },
+      });
+      this.logger.log(`[Quick Connect] Token valid for user: ${meRes.data.name} (${meRes.data.id})`);
+
+      // 2. Fetch user's Facebook Pages using the token directly
+      const pagesRes = await axios.get(`https://graph.facebook.com/${this.graphApiVersion}/me/accounts`, {
+        params: { access_token: userAccessToken },
+      });
+      if (!pagesRes.data.data || pagesRes.data.data.length === 0) {
+        throw new Error('No Facebook Pages found. Your account must manage a Facebook Page that is linked to an Instagram Business/Creator account.');
+      }
+      const pageData = pagesRes.data.data[0];
+      const pageAccessToken = pageData.access_token;
+      const facebookPageId = pageData.id;
+      this.logger.log(`[Quick Connect] Found Facebook Page: ${pageData.name} (${facebookPageId})`);
+
+      // 3. Fetch linked Instagram Business Account from the page
+      const igRes = await axios.get(`https://graph.facebook.com/${this.graphApiVersion}/${facebookPageId}`, {
+        params: { fields: 'instagram_business_account', access_token: pageAccessToken },
+      });
+      const igUserId = igRes.data.instagram_business_account?.id;
+      if (!igUserId) {
+        throw new Error('No Instagram Business/Creator account is linked to this Facebook Page. Go to Instagram Settings → Switch to Professional Account, then link it to your Facebook Page.');
+      }
+
+      // 4. Fetch Instagram username
+      const profileRes = await axios.get(`https://graph.facebook.com/${this.graphApiVersion}/${igUserId}`, {
+        params: { fields: 'username,name', access_token: pageAccessToken },
+      });
+      const username = profileRes.data.username || profileRes.data.name || 'instagram_user';
+      this.logger.log(`[Quick Connect] Linked @${username} (IG ID: ${igUserId}). Saving to DB...`);
+
+      // 5. Save to DB (use page access token for all future API calls)
+      await this.prisma.instagramAccount.upsert({
+        where: { igUserId },
+        update: { userId, username, facebookPageId, accessToken: pageAccessToken },
+        create: { userId, igUserId, username, facebookPageId, accessToken: pageAccessToken },
+      });
+
+      return { success: true, igUserId, username, facebookPageId };
+
+    } catch (error) {
+      this.logger.error('[Quick Connect] Failed', error.response?.data || error.message);
+      throw new InternalServerErrorException(
+        error.response?.data?.error?.message || error.message || 'Failed to connect with access token.',
+      );
     }
   }
 }

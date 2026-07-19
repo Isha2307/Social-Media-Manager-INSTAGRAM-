@@ -1,47 +1,218 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import axios from 'axios';
 import { CreatePostDto, MediaType } from '../dto/create-post.dto';
 import { InstagramApiException } from '../exceptions/instagram-api.exception';
+import { PrismaService } from '../../../prisma.service';
 
 @Injectable()
 export class InstagramPublishingService {
   private readonly logger = new Logger(InstagramPublishingService.name);
   private readonly graphApiVersion: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private prisma: PrismaService,
+    @InjectQueue('instagram-publishing') private readonly publishingQueue: Queue,
+  ) {
     this.graphApiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v19.0';
   }
 
   /**
    * Main method to handle the 2-step publishing flow.
    * @param dto The post payload
-   * @param pageAccessToken The specific Page Access Token for this user's IG Account
+   * @param pageAccessToken Optional page access token. If not provided, retrieved from DB.
    */
-  async publish(dto: CreatePostDto, pageAccessToken: string): Promise<string> {
+  async publish(dto: CreatePostDto, pageAccessToken?: string): Promise<string> {
+    // 1. Resolve Access Token
+    let token = pageAccessToken;
+    if (!token) {
+      const account = await this.prisma.instagramAccount.findUnique({
+        where: { igUserId: dto.igUserId },
+      });
+      if (!account) {
+        throw new NotFoundException(`Instagram account ${dto.igUserId} not linked.`);
+      }
+      token = account.accessToken;
+    }
+
+    // 2. Create local DB post log
+    const post = await this.prisma.instagramPost.create({
+      data: {
+        igUserId: dto.igUserId,
+        caption: dto.caption || null,
+        mediaUrl: dto.mediaUrl,
+        mediaType: dto.mediaType,
+        status: 'PUBLISHING',
+      },
+    });
+
     try {
-      this.logger.log(`Starting publish process for IG Account: ${dto.igUserId}`);
+      this.logger.log(`Starting publish process for IG Account: ${dto.igUserId}, Post ID: ${post.id}`);
       
       // Step 1: Create Media Container
-      const creationId = await this.createMediaContainer(dto, pageAccessToken);
+      const creationId = await this.createMediaContainer(dto, token);
       
       // If it's a video, we must wait for Meta to finish processing the container
       if (dto.mediaType === MediaType.VIDEO) {
-        await this.waitForVideoProcessing(creationId, pageAccessToken);
+        await this.waitForVideoProcessing(creationId, token);
       }
 
       // Step 2: Publish the Container
-      const platformPostId = await this.publishMediaContainer(dto.igUserId, creationId, pageAccessToken);
+      const platformPostId = await this.publishMediaContainer(dto.igUserId, creationId, token);
       
+      // Update DB status to PUBLISHED
+      await this.prisma.instagramPost.update({
+        where: { id: post.id },
+        data: {
+          status: 'PUBLISHED',
+          platformPostId,
+        },
+      });
+
       this.logger.log(`Successfully published post to Instagram. Platform ID: ${platformPostId}`);
       return platformPostId;
     } catch (error) {
+      let errorMsg = error.message;
+      if (error.response?.data?.error) {
+        errorMsg = JSON.stringify(error.response.data.error);
+      }
+
+      // Update DB status to FAILED
+      await this.prisma.instagramPost.update({
+        where: { id: post.id },
+        data: {
+          status: 'FAILED',
+          errorMessage: errorMsg,
+        },
+      });
+
       if (error.response?.data?.error) {
         throw new InstagramApiException(error.response.data);
       }
       this.logger.error('Failed to publish post', error.message);
       throw new InternalServerErrorException('Failed to publish post to Instagram');
     }
+  }
+
+  /**
+   * Publishes a scheduled post from the database.
+   */
+  async publishById(postId: string): Promise<string> {
+    const post = await this.prisma.instagramPost.findUnique({
+      where: { id: postId },
+    });
+    if (!post) {
+      throw new NotFoundException(`Post ${postId} not found.`);
+    }
+
+    if (post.status === 'PUBLISHED') {
+      return post.platformPostId;
+    }
+
+    const account = await this.prisma.instagramAccount.findUnique({
+      where: { igUserId: post.igUserId },
+    });
+    if (!account) {
+      throw new NotFoundException(`Instagram account ${post.igUserId} not linked.`);
+    }
+
+    // Set post status to PUBLISHING
+    await this.prisma.instagramPost.update({
+      where: { id: postId },
+      data: { status: 'PUBLISHING' },
+    });
+
+    try {
+      const dto: CreatePostDto = {
+        igUserId: post.igUserId,
+        caption: post.caption,
+        mediaUrl: post.mediaUrl,
+        mediaType: post.mediaType as MediaType,
+      };
+
+      this.logger.log(`Publishing scheduled post ${postId}...`);
+      
+      // Step 1: Create Media Container
+      const creationId = await this.createMediaContainer(dto, account.accessToken);
+      
+      // If it's a video, we must wait for Meta to finish processing the container
+      if (dto.mediaType === MediaType.VIDEO) {
+        await this.waitForVideoProcessing(creationId, account.accessToken);
+      }
+
+      // Step 2: Publish the Container
+      const platformPostId = await this.publishMediaContainer(dto.igUserId, creationId, account.accessToken);
+      
+      // Update DB status to PUBLISHED
+      await this.prisma.instagramPost.update({
+        where: { id: postId },
+        data: {
+          status: 'PUBLISHED',
+          platformPostId,
+        },
+      });
+
+      this.logger.log(`Successfully published scheduled post to Instagram. Platform ID: ${platformPostId}`);
+      return platformPostId;
+    } catch (error) {
+      let errorMsg = error.message;
+      if (error.response?.data?.error) {
+        errorMsg = JSON.stringify(error.response.data.error);
+      }
+
+      // Update DB status to FAILED
+      await this.prisma.instagramPost.update({
+        where: { id: postId },
+        data: {
+          status: 'FAILED',
+          errorMessage: errorMsg,
+        },
+      });
+
+      this.logger.error(`Failed to publish scheduled post ${postId}`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Schedules a post to be published at a future time.
+   */
+  async schedule(dto: CreatePostDto): Promise<any> {
+    if (!dto.scheduledAt) {
+      throw new InternalServerErrorException('scheduledAt is required to schedule a post.');
+    }
+
+    const scheduledDate = new Date(dto.scheduledAt);
+    const delay = scheduledDate.getTime() - Date.now();
+
+    // Create DB entry
+    const post = await this.prisma.instagramPost.create({
+      data: {
+        igUserId: dto.igUserId,
+        caption: dto.caption || null,
+        mediaUrl: dto.mediaUrl,
+        mediaType: dto.mediaType,
+        status: 'SCHEDULED',
+        scheduledAt: scheduledDate,
+      },
+    });
+
+    // Enqueue job with delay
+    await this.publishingQueue.add(
+      'publish-post',
+      { postId: post.id },
+      {
+        delay: Math.max(0, delay),
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      },
+    );
+
+    this.logger.log(`Post ${post.id} scheduled for ${scheduledDate.toISOString()} with delay ${delay}ms`);
+    return post;
   }
 
   private async createMediaContainer(dto: CreatePostDto, accessToken: string): Promise<string> {

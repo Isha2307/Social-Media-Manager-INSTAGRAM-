@@ -16,9 +16,11 @@ const config_1 = require("@nestjs/config");
 const axios_1 = require("axios");
 const instagram_api_exception_1 = require("../exceptions/instagram-api.exception");
 const rate_limit_exception_1 = require("../exceptions/rate-limit.exception");
+const prisma_service_1 = require("../../../prisma.service");
 let InstagramCommentsService = InstagramCommentsService_1 = class InstagramCommentsService {
-    constructor(configService) {
+    constructor(configService, prisma) {
         this.configService = configService;
+        this.prisma = prisma;
         this.logger = new common_1.Logger(InstagramCommentsService_1.name);
         this.graphApiVersion = this.configService.get('META_GRAPH_API_VERSION') || 'v19.0';
     }
@@ -60,6 +62,25 @@ let InstagramCommentsService = InstagramCommentsService_1 = class InstagramComme
             }
             const response = await axios_1.default.get(url, { params });
             this.checkRateLimit(response);
+            if (response.data?.data) {
+                for (const comment of response.data.data) {
+                    await this.prisma.instagramComment.upsert({
+                        where: { platformCommentId: comment.id },
+                        update: {
+                            text: comment.text,
+                            username: comment.username || 'unknown',
+                            timestamp: new Date(comment.timestamp),
+                        },
+                        create: {
+                            platformCommentId: comment.id,
+                            mediaId,
+                            text: comment.text || '',
+                            username: comment.username || 'unknown',
+                            timestamp: new Date(comment.timestamp),
+                        },
+                    });
+                }
+            }
             return {
                 data: response.data.data,
                 paging: response.data.paging,
@@ -85,7 +106,22 @@ let InstagramCommentsService = InstagramCommentsService_1 = class InstagramComme
             };
             const response = await axios_1.default.post(url, null, { params });
             this.checkRateLimit(response);
-            return response.data.id;
+            const replyId = response.data.id;
+            const parentComment = await this.prisma.instagramComment.findUnique({
+                where: { platformCommentId: commentId },
+            });
+            const mediaId = parentComment ? parentComment.mediaId : 'unknown';
+            await this.prisma.instagramComment.create({
+                data: {
+                    platformCommentId: replyId,
+                    mediaId,
+                    text: message,
+                    username: 'me',
+                    timestamp: new Date(),
+                    parentCommentId: commentId,
+                },
+            });
+            return replyId;
         }
         catch (error) {
             if (error instanceof rate_limit_exception_1.RateLimitException)
@@ -101,6 +137,7 @@ let InstagramCommentsService = InstagramCommentsService_1 = class InstagramComme
 exports.InstagramCommentsService = InstagramCommentsService;
 exports.InstagramCommentsService = InstagramCommentsService = InstagramCommentsService_1 = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [config_1.ConfigService])
+    __metadata("design:paramtypes", [config_1.ConfigService,
+        prisma_service_1.PrismaService])
 ], InstagramCommentsService);
 //# sourceMappingURL=instagram-comments.service.js.map

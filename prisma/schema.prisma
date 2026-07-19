@@ -1,0 +1,64 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model InstagramAccount {
+  id             String   @id @default(uuid())
+  userId         String   // References local system User ID
+  igUserId       String   @unique
+  username       String
+  facebookPageId String
+  accessToken    String   // Page Access Token
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model InstagramPost {
+  id             String   @id @default(uuid())
+  igUserId       String
+  caption        String?
+  mediaUrl       String
+  mediaType      String   // "IMAGE" or "VIDEO"
+  status         String   // "DRAFT", "SCHEDULED", "PUBLISHING", "PUBLISHED", "FAILED"
+  scheduledAt    DateTime?
+  platformPostId String?  // ID returned by Instagram Graph API
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model InstagramComment {
+  id                String   @id @default(uuid())
+  platformCommentId String   @unique
+  mediaId           String   // Platform Media ID this comment belongs to
+  text              String
+  username          String
+  timestamp         DateTime
+  parentCommentId   String?  // Reference to parent comment if it is a reply
+  createdAt         DateTime @default(now())
+}
+
+model InstagramMessage {
+  id                String   @id @default(uuid())
+  platformMessageId String   @unique
+  senderId          String   // IG User ID of sender
+  recipientId       String   // IG User ID of recipient
+  text              String
+  timestamp         DateTime
+  createdAt         DateTime @default(now())
+}
+
+model WebhookEvent {
+  id           String   @id @default(uuid())
+  eventType    String   // e.g. "comments", "messages"
+  payload      String   // Raw JSON string of webhook event
+  status       String   // "PENDING", "PROCESSED", "FAILED"
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

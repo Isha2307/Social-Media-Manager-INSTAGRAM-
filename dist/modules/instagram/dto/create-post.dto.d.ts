@@ -7,4 +7,5 @@ export declare class CreatePostDto {
     caption?: string;
     mediaUrl: string;
     mediaType: MediaType;
+    scheduledAt?: string;
 }

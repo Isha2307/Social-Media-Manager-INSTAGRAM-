@@ -3,13 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosResponse } from 'axios';
 import { InstagramApiException } from '../exceptions/instagram-api.exception';
 import { RateLimitException } from '../exceptions/rate-limit.exception';
+import { PrismaService } from '../../../prisma.service';
 
 @Injectable()
 export class InstagramCommentsService {
   private readonly logger = new Logger(InstagramCommentsService.name);
   private readonly graphApiVersion: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private prisma: PrismaService,
+  ) {
     this.graphApiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v19.0';
   }
 
@@ -64,6 +68,27 @@ export class InstagramCommentsService {
       const response = await axios.get(url, { params });
       this.checkRateLimit(response);
 
+      // Sync fetched comments to our SQLite database
+      if (response.data?.data) {
+        for (const comment of response.data.data) {
+          await this.prisma.instagramComment.upsert({
+            where: { platformCommentId: comment.id },
+            update: {
+              text: comment.text,
+              username: comment.username || 'unknown',
+              timestamp: new Date(comment.timestamp),
+            },
+            create: {
+              platformCommentId: comment.id,
+              mediaId,
+              text: comment.text || '',
+              username: comment.username || 'unknown',
+              timestamp: new Date(comment.timestamp),
+            },
+          });
+        }
+      }
+
       return {
         data: response.data.data,
         paging: response.data.paging,
@@ -95,7 +120,27 @@ export class InstagramCommentsService {
       const response = await axios.post(url, null, { params });
       this.checkRateLimit(response);
 
-      return response.data.id; // Returns the ID of the new reply comment
+      const replyId = response.data.id; // Returns the ID of the new reply comment
+
+      // Retrieve parent comment to find the mediaId
+      const parentComment = await this.prisma.instagramComment.findUnique({
+        where: { platformCommentId: commentId },
+      });
+      const mediaId = parentComment ? parentComment.mediaId : 'unknown';
+
+      // Save our reply into database
+      await this.prisma.instagramComment.create({
+        data: {
+          platformCommentId: replyId,
+          mediaId,
+          text: message,
+          username: 'me', // Represents the account making the reply
+          timestamp: new Date(),
+          parentCommentId: commentId,
+        },
+      });
+
+      return replyId;
     } catch (error) {
       if (error instanceof RateLimitException) throw error;
       if (error.response?.data?.error) {

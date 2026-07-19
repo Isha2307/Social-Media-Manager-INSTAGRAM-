@@ -38,4 +38,9 @@ __decorate([
     (0, class_validator_1.IsEnum)(MediaType),
     __metadata("design:type", String)
 ], CreatePostDto.prototype, "mediaType", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreatePostDto.prototype, "scheduledAt", void 0);
 //# sourceMappingURL=create-post.dto.js.map

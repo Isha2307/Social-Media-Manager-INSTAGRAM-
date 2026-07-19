@@ -9,7 +9,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AppModule = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const bull_1 = require("@nestjs/bull");
 const instagram_module_1 = require("./modules/instagram/instagram.module");
+const prisma_module_1 = require("./prisma.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -17,6 +19,17 @@ exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
         imports: [
             config_1.ConfigModule.forRoot({ isGlobal: true }),
+            prisma_module_1.PrismaModule,
+            bull_1.BullModule.forRootAsync({
+                imports: [config_1.ConfigModule],
+                useFactory: async (configService) => ({
+                    redis: {
+                        host: configService.get('REDIS_HOST') || 'localhost',
+                        port: configService.get('REDIS_PORT') || 6379,
+                    },
+                }),
+                inject: [config_1.ConfigService],
+            }),
             instagram_module_1.InstagramModule,
         ],
     })

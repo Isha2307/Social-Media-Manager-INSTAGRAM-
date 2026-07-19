@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bull';
 
 // Controllers
 import { InstagramAuthController } from './controllers/instagram-auth.controller';
@@ -15,12 +16,16 @@ import { InstagramWebhookService } from './services/instagram-webhook.service';
 
 // Processors & Gateways
 import { InstagramWebhookProcessor } from './processors/instagram-webhook.processor';
+import { InstagramPublishingProcessor } from './processors/instagram-publishing.processor';
 import { InstagramGateway } from './gateways/instagram.gateway';
 
 @Module({
   imports: [
     ConfigModule,
-    // BullModule.registerQueue({ name: 'instagram-webhook' }) // Uncomment when Bull is installed
+    BullModule.registerQueue(
+      { name: 'instagram-webhook' },
+      { name: 'instagram-publishing' },
+    ),
   ],
   controllers: [
     InstagramAuthController,
@@ -34,6 +39,7 @@ import { InstagramGateway } from './gateways/instagram.gateway';
     InstagramCommentsService,
     InstagramWebhookService,
     InstagramWebhookProcessor,
+    InstagramPublishingProcessor,
     InstagramGateway,
   ],
 })
